@@ -166,7 +166,8 @@ void check_intr(ppi8255_t *ppi, uint8_t int_num, uint8_t op)
 	
 }
 // ai helped me with this :P
-uint8_t ppi8255_portc_read(ppi8255_t *ppi)
+// i missed this originally, it's supposed to also mirror the control signals..
+static uint8_t ppi_portc_read(ppi8255_t *ppi)
 {
     /* start with latched/last-written output value */
     uint8_t val = ppi->port_latches[2];
@@ -447,7 +448,7 @@ uint8_t ppi_read(ppi8255_t *ppi, uint8_t port)
 				case PPI_ACCESS_OK:
 				case PPI_ACCESS_WARN:
 					// both are valid, just for verbosity
-					return ppi8255_portc_read(ppi);
+					return ppi_portc_read(ppi);
 				case PPI_ACCESS_ILLEGAL:
 				case PPI_ACCESS_UNKNOWN:
 					// invalid, but shouldn't happen...
