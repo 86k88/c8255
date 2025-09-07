@@ -59,7 +59,7 @@ typedef struct {
 
     bool ibf_a, obf_a, intr_a; // Handshake/status A
     bool ibf_b, obf_b, intr_b; // Handshake/status B
-
+	bool inte_a, inte_b;
     bool strb_a, strb_b;       // Strobe flip-flops
 
     ppi8255_callbacks_t cb;    // Callbacks
@@ -70,8 +70,8 @@ typedef struct {
 #ifdef __cplusplus
 extern "C" {
 #endif
-void check_intr(ppi8255_t *ppi, uint8_t int_num, uint8_t op);
-void     ppi8255_init(ppi8255_t *ppi, ppi8255_callbacks_t *cb, void *user);
+void 	 check_intr(ppi8255_t *ppi, uint8_t int_num, uint8_t op);
+void     ppi_init(ppi8255_t *ppi, ppi8255_callbacks_t *cb, void *user);
 uint8_t  ppi_read(ppi8255_t *ppi, uint8_t port);
 void     ppi_write(ppi8255_t *ppi, uint8_t port, uint8_t data);
 void     ppi_strobe(ppi8255_t *ppi, uint8_t group);

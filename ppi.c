@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdio.h>
+#include <string.h>
 /* --- Callback interface --- */
 typedef struct {
     void (*stb_changed)(int port, int level, void *user);  // Strobe line
@@ -49,8 +50,9 @@ typedef struct {
     /* Handshake flip-flops (per port group) */
     bool ibf_a, obf_a, intr_a;
     bool ibf_b, obf_b, intr_b;
-	
+	bool inte_a, inte_b;
 	bool strb_a, strb_b;
+    // Mode 2 on port A has more complex INTR logic
 
     /* External callbacks */
     ppi8255_callbacks_t cb;
@@ -70,7 +72,8 @@ void check_intr(ppi8255_t *ppi, uint8_t int_num, uint8_t op)
         case 0: // Port A
             switch (ppi->mode_a) {
                 case PPI_MODE0:
-                   break;
+                    // Always legal (simple I/O)
+                    break;
 
 				case PPI_MODE1_INPUT:
 					if (op == 0) { // STB
@@ -83,8 +86,10 @@ void check_intr(ppi8255_t *ppi, uint8_t int_num, uint8_t op)
 						ppi->intr_a = 0;
 						if (ppi->cb.ibf_changed) ppi->cb.ibf_changed(0, 0, ppi->user);
 					}
+					if (ppi->inte_a){
 					if (ppi->cb.intr_changed) 
 						ppi->cb.intr_changed(0, ppi->intr_a, ppi->user);
+					}
 					break;
 
 
@@ -100,8 +105,10 @@ void check_intr(ppi8255_t *ppi, uint8_t int_num, uint8_t op)
 						ppi->intr_a = 0;
 						if (ppi->cb.obf_changed) ppi->cb.obf_changed(0, 1, 0xFF, ppi->user);
 					}
+					if (ppi->inte_a){
 					if (ppi->cb.intr_changed) 
 						ppi->cb.intr_changed(0, ppi->intr_a, ppi->user);
+					}
 					break;
 
                 case PPI_MODE2:
@@ -125,8 +132,10 @@ void check_intr(ppi8255_t *ppi, uint8_t int_num, uint8_t op)
 						ppi->intr_b = 0;
 						if (ppi->cb.ibf_changed) ppi->cb.ibf_changed(1, 0, ppi->user);
 					}
+					if(ppi->inte_b){
 					if (ppi->cb.intr_changed) 
 						ppi->cb.intr_changed(1, ppi->intr_b, ppi->user);
+					}
 					break;
 
 
@@ -142,8 +151,10 @@ void check_intr(ppi8255_t *ppi, uint8_t int_num, uint8_t op)
 						ppi->intr_b = 0;
 						if (ppi->cb.obf_changed) ppi->cb.obf_changed(1,1, 0xFF, ppi->user);
 					}
+					if(ppi->inte_b){
 					if (ppi->cb.intr_changed) 
 						ppi->cb.intr_changed(1, ppi->intr_b, ppi->user);
+					}
 					break;
 
                 default:
@@ -154,13 +165,52 @@ void check_intr(ppi8255_t *ppi, uint8_t int_num, uint8_t op)
 	}
 	
 }
+// ai helped me with this :P
+uint8_t ppi8255_portc_read(ppi8255_t *ppi)
+{
+    /* start with latched/last-written output value */
+    uint8_t val = ppi->port_latches[2];
+
+    /* port A in mode 1? */
+    if (ppi->mode_a == PPI_MODE1_INPUT || ppi->mode_a == PPI_MODE1_OUTPUT) {
+        /* PC5 = IBF_A (input buffer full) */
+        if (ppi->ibf_a) val |=  (1 << 5);
+        else            val &= ~(1 << 5);
+
+        /* PC3 = INTR_A */
+        if (ppi->intr_a) val |=  (1 << 3);
+        else             val &= ~(1 << 3);
+
+        /* PC4 = INTE_A (flip-flop) */
+        if (ppi->inte_a) val |=  (1 << 4);
+        else             val &= ~(1 << 4);
+    }
+
+    /* port B in mode 1? */
+    if (ppi->mode_b == PPI_MODE1_INPUT || ppi->mode_b == PPI_MODE1_OUTPUT) {
+        /* PC1 = IBF_B */
+        if (ppi->ibf_b) val |=  (1 << 1);
+        else            val &= ~(1 << 1);
+
+        /* PC0 = INTR_B */
+        if (ppi->intr_b) val |=  (1 << 0);
+        else             val &= ~(1 << 0);
+
+        /* PC2 = INTE_B */
+        if (ppi->inte_b) val |=  (1 << 2);
+        else             val &= ~(1 << 2);
+    }
+
+    return val;
+}
+
 static ppi_access_t ppi_check_port_mode(ppi8255_t *ppi, int port, ppi8255_op_t op)
 {
     switch (port) {
         case 0: // Port A
             switch (ppi->mode_a) {
                 case PPI_MODE0:
-                    
+                    // Always legal (simple I/O)
                     return PPI_ACCESS_OK;
 
                 case PPI_MODE1_INPUT:
@@ -228,10 +278,12 @@ static ppi_access_t ppi_check_port_mode(ppi8255_t *ppi, int port, ppi8255_op_t o
             break;
 
         case 2: // Port C
+            // Upper/lower halves may differ
             if (op == PPI_OP_WRITE && ppi->port_c_upper_in && ppi->port_c_lower_in) {
                 printf("Illegal: write to Port C while configured as full input\n");
                 return PPI_ACCESS_ILLEGAL;
             }
+            // Reads are always legal (returns latch or pin values depending on config)
             return PPI_ACCESS_OK;
 
         default:
@@ -251,8 +303,32 @@ static ppi8255_control_t ppi_decode_control(ppi8255_t *ppi, uint8_t control_val)
 		int set_bit = control_val & bsr_set;
 		if (set_bit){
                 ppi->port_latches[2] |=  (1 << sel_bit); // set bit
+				if(sel_bit == 2)
+				{
+					ppi->inte_b = 1;
+				}
+				if(sel_bit == 6)
+				{
+					ppi->inte_a = 1;
+				}
+				if(sel_bit == 4)
+				{
+					ppi->inte_a = 1;
+				}
 		}else{
                 ppi->port_latches[2] &= ~(1 << sel_bit); // reset bit
+				if(sel_bit == 2)
+				{
+					ppi->inte_b = 0;
+				}
+				if(sel_bit == 6)
+				{
+					ppi->inte_a = 0;
+				}
+				if(sel_bit == 4)
+				{
+					ppi->inte_a = 0;
+				}
 		}
 		return PPI_BSR;
 	} else {
@@ -292,6 +368,7 @@ void ppi_strobe(ppi8255_t *ppi, uint8_t group)
         case 0: // Port A
             switch (ppi->mode_a) {
                 case PPI_MODE0:
+                    // Always legal (simple I/O)
                     break;
 
                 case PPI_MODE1_INPUT:
@@ -344,7 +421,6 @@ uint8_t ppi_read(ppi8255_t *ppi, uint8_t port)
 	{
 		case 0x00:
 		case 0x01:
-		case 0x02:
 		{
 			switch (ppi_check_port_mode(ppi, iport, PPI_OP_READ))
 			{
@@ -365,6 +441,24 @@ uint8_t ppi_read(ppi8255_t *ppi, uint8_t port)
 			}
 			
 		}
+		case 0x02:
+		switch (ppi_check_port_mode(ppi, iport, PPI_OP_READ))
+			{
+				case PPI_ACCESS_OK:
+				case PPI_ACCESS_WARN:
+					// both are valid, just for verbosity
+					return ppi8255_portc_read(ppi);
+				case PPI_ACCESS_ILLEGAL:
+				case PPI_ACCESS_UNKNOWN:
+					// invalid, but shouldn't happen...
+					return 0xFF;
+					
+				default:
+					return 0xFF;
+					
+			
+			}
+			
 		case 0x03:
 		{
 			// invalid read
@@ -422,33 +516,19 @@ void ppi_write(ppi8255_t *ppi, uint8_t port, uint8_t data)
 
 void ppi_init(ppi8255_t *ppi, ppi8255_callbacks_t *cb, void *user)
 {
-    if (!ppi) return;
+    memset(ppi, 0, sizeof(*ppi));  // clears everything, avoids garbage
 
-    for (int i = 0; i < 3; i++) {
-        ppi->port_latches[i] = 0x00;
-        ppi->out_port[i]     = 0x00;
-        ppi->in_port[i]      = 0x00;
-    }
+    ppi->control = 0x9B; // default control word
+    ppi->mode_a  = PPI_MODE0;
+    ppi->mode_b  = PPI_MODE0;
+    ppi->port_a_in = ppi->port_b_in = true;
+    ppi->port_c_upper_in = ppi->port_c_lower_in = true;
 
-    ppi->control         = 0x9B; // default: all ports input, Mode 0
-    ppi->mode_a          = PPI_MODE0;
-    ppi->mode_b          = PPI_MODE0;
-    ppi->port_a_in       = true;
-    ppi->port_b_in       = true;
-    ppi->port_c_upper_in = true;
-    ppi->port_c_lower_in = true;
-
-    ppi->ibf_a = ppi->obf_a = ppi->intr_a = false;
-    ppi->ibf_b = ppi->obf_b = ppi->intr_b = false;
-    ppi->strb_a = ppi->strb_b = false;
     if (cb) {
         ppi->cb = *cb;
     } else {
-        ppi->cb.stb_changed  = NULL;
-        ppi->cb.ack_changed  = NULL;
-        ppi->cb.ibf_changed  = NULL;
-        ppi->cb.obf_changed  = NULL;
-        ppi->cb.intr_changed = NULL;
+        memset(&ppi->cb, 0, sizeof(ppi->cb));
     }
     ppi->user = user;
 }
+
